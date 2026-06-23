@@ -51,17 +51,20 @@ class MOSTTracker:
 
         self.recipe = self.config.get("recipe", ["Box 1", "Box 2", "Assembly Area"])
         
-        # Grasp Esik Degerleri
+        # Grasp Eşik Degerleri
         grasp_cfg = self.config.get("grasp", {})
         self.pinch_threshold = grasp_cfg.get("pinch_threshold", 0.28)
         self.release_threshold = grasp_cfg.get("release_threshold", 0.40)
         self.velocity_threshold = grasp_cfg.get("velocity_threshold", 8.0)
-        self.grasp_confirm_frames = grasp_cfg.get("grasp_confirm_frames", 4)
-        self.release_confirm_frames = grasp_cfg.get("release_confirm_frames", 3)
+        
+        # Saniye bazlı eşikler
+        self.grasp_confirm_time = grasp_cfg.get("grasp_confirm_time", 0.15)
+        self.release_confirm_time = grasp_cfg.get("release_confirm_time", 0.10)
 
     def reset_system(self):
         self.state = "IDLE"
         self.state_start_time = time.time()
+        self.last_update_time = time.time()
         
         # Recete kontrolu
         self.current_recipe_idx = 0
@@ -81,9 +84,11 @@ class MOSTTracker:
         self.prev_index_tip = None
         self.velocity_history = deque(maxlen=5)
         
-        # Debounce sayaclari
-        self.grasp_confirm_counter = 0
-        self.place_confirm_counter = 0
+        # Zaman damgalı ilerleme sayacları
+        self.grasp_progress = 0.0
+        self.place_progress = 0.0
+        self.hand_lost_time = 0.0
+        self.confidence = 1.0
         
         # Metrik takibi
         self.last_pinch_ratio = 0.0
@@ -103,9 +108,12 @@ class MOSTTracker:
     def reset_cycle(self, next_cycle=True):
         self.state = "IDLE"
         self.state_start_time = time.time()
+        self.last_update_time = time.time()
         self.current_recipe_idx = 0
-        self.grasp_confirm_counter = 0
-        self.place_confirm_counter = 0
+        self.grasp_progress = 0.0
+        self.place_progress = 0.0
+        self.hand_lost_time = 0.0
+        self.confidence = 1.0
         self.sequence_error = False
         self.active_station = "None"
         self.current_cycle_steps = {"Reach": 0.0, "Grasp": 0.0, "Move": 0.0, "Place": 0.0, "Return": 0.0}
@@ -114,11 +122,46 @@ class MOSTTracker:
 
     def update(self, hand_landmarks, frame_shape):
         """
-        hand_landmarks: 21 adet landmark içeren liste
+        hand_landmarks: 21 adet landmark içeren liste VEYA None
         frame_shape: (height, width)
         """
         h, w = frame_shape
         current_time = time.time()
+        delta_time = current_time - self.last_update_time
+        self.last_update_time = current_time
+        
+        # Eğer el kayıpsa (None)
+        if hand_landmarks is None:
+            self.hand_lost_time += delta_time
+            self.confidence = max(0.0, self.confidence - (delta_time * 2.0))  # 0.5 sn'de sıfırlanır
+            
+            if self.hand_lost_time >= 0.5 and self.state != "LOST":
+                # LOST durumunda progress sıfırlanır
+                self.grasp_progress = 0.0
+                self.place_progress = 0.0
+                self.state = "LOST"
+                self.state_start_time = current_time
+            return self.state
+            
+        # El tekrar göründüyse kayıp sayacını sıfırla
+        if self.hand_lost_time > 0:
+            self.hand_lost_time = 0.0
+            self.confidence = min(1.0, self.confidence + (delta_time * 5.0)) # 0.2 sn'de toparlar
+            
+            # Teleport koruması: Filtreleri ve hız geçmişini resetle
+            for f in self.filters.values():
+                f.value = None
+            self.prev_index_tip = None
+            self.velocity_history.clear()
+            
+            # Eğer LOST ise IDLE'a dön (veya en son kalınan yerden devam edebilir, ama IDLE en güvenlisi)
+            if self.state == "LOST":
+                self.state = "IDLE"
+                self.state_start_time = current_time
+        else:
+            # Sürekli göründüğünde güven artar
+            self.confidence = min(1.0, self.confidence + (delta_time * 5.0))
+
         duration = current_time - self.state_start_time
         
         # 1. Koordinatları piksele donustur ve filtrele
@@ -162,9 +205,9 @@ class MOSTTracker:
         avg_velocity = np.mean(self.velocity_history) if self.velocity_history else 0.0
         self.last_velocity = avg_velocity
         
-        # FSM Kosullari
-        is_pinching = pinch_ratio < self.pinch_threshold
-        is_releasing = pinch_ratio > self.release_threshold
+        # FSM Kosullari (Güven skoru < %70 ise pinch/release kabul edilmez)
+        is_pinching = (pinch_ratio < self.pinch_threshold) and (self.confidence > 0.7)
+        is_releasing = (pinch_ratio > self.release_threshold) and (self.confidence > 0.7)
         is_still = avg_velocity < self.velocity_threshold
         
         hand_pos = f_index_tip
@@ -201,26 +244,26 @@ class MOSTTracker:
                     self.current_cycle_steps["Reach"] += duration
                     self.state = "GRASP"
                     self.state_start_time = current_time
-                    self.grasp_confirm_counter = 0
+                    self.grasp_progress = 0.0
                     self.active_station = target_station_name
                     
         elif self.state == "GRASP":
             # Kutu icinde pinch (kavrama) bekleniyor
             if point_in_polygon(hand_pos, target_polygon):
                 if is_pinching:
-                    self.grasp_confirm_counter += 1
-                    if self.grasp_confirm_counter >= self.grasp_confirm_frames:
+                    self.grasp_progress += delta_time
+                    if self.grasp_progress >= self.grasp_confirm_time:
                         self.current_cycle_steps["Grasp"] += duration
                         self.state = "MOVE"
                         self.state_start_time = current_time
-                        self.place_confirm_counter = 0
+                        self.place_progress = 0.0
                 else:
-                    self.grasp_confirm_counter = max(0, self.grasp_confirm_counter - 1)
+                    self.grasp_progress = max(0.0, self.grasp_progress - delta_time)
             else:
                 # Eger kavramadan kutuyu terk ederse REACH fazina geri don
                 self.state = "REACH"
                 self.state_start_time = current_time
-                self.grasp_confirm_counter = 0
+                self.grasp_progress = 0.0
                 
         elif self.state == "MOVE":
             # Montaj alanina ulasilinca PLACE baslar
@@ -228,21 +271,21 @@ class MOSTTracker:
                 self.current_cycle_steps["Move"] += duration
                 self.state = "PLACE"
                 self.state_start_time = current_time
-                self.place_confirm_counter = 0
+                self.place_progress = 0.0
                 self.active_station = "Assembly Area"
                 
         elif self.state == "PLACE":
             # Montaj alaninda parmaklar acilirsa veya el montaj alanini terk ederse
             if point_in_polygon(hand_pos, assembly_polygon):
                 if is_releasing:
-                    self.place_confirm_counter += 1
+                    self.place_progress += delta_time
                 else:
-                    self.place_confirm_counter = max(0, self.place_confirm_counter - 1)
+                    self.place_progress = max(0.0, self.place_progress - delta_time)
             else:
                 # El montaj alanini terk ederse direk birakildi kabul et
-                self.place_confirm_counter = self.release_confirm_frames
+                self.place_progress = self.release_confirm_time
                 
-            if self.place_confirm_counter >= self.release_confirm_frames:
+            if self.place_progress >= self.release_confirm_time:
                 self.current_cycle_steps["Place"] += duration
                 self.current_recipe_idx += 1
                 
@@ -259,8 +302,8 @@ class MOSTTracker:
                     # Siradaki kutuya gec
                     self.state = "REACH"
                     self.state_start_time = current_time
-                    self.grasp_confirm_counter = 0
-                    self.place_confirm_counter = 0
+                    self.grasp_progress = 0.0
+                    self.place_progress = 0.0
                     
         elif self.state == "RETURNING_HOME":
             if point_in_polygon(hand_pos, home_polygon):
@@ -311,9 +354,9 @@ class MOSTTracker:
     def get_metrics(self):
         # Debounce progress string
         if self.state == "GRASP":
-            debounce_str = f"{self.grasp_confirm_counter}/{self.grasp_confirm_frames}"
+            debounce_str = f"{self.grasp_progress:.2f}s/{self.grasp_confirm_time:.2f}s"
         elif self.state == "PLACE":
-            debounce_str = f"{self.place_confirm_counter}/{self.release_confirm_frames}"
+            debounce_str = f"{self.place_progress:.2f}s/{self.release_confirm_time:.2f}s"
         else:
             debounce_str = "0"
             
@@ -329,7 +372,8 @@ class MOSTTracker:
             "tmu": tmu,
             "sequence_error": self.sequence_error,
             "active_station": self.active_station,
-            "guidance": self.get_guidance()
+            "guidance": self.get_guidance(),
+            "confidence": self.confidence
         }
 
     def save_report(self, path):

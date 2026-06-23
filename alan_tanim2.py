@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 from datetime import datetime
 from el_takip_analizi import el_takip_ve_ergonomi_motoru_kare, excel_raporu_kaydet, alanlardan_fsm_config_uret
 from fsm import MOSTTracker
+from state import AnalysisContext
 
 class ErgonomiArayuz:
     def __init__(self, window):
@@ -462,23 +463,13 @@ class ErgonomiArayuz:
         self.btn_video_durdur.config(state=tk.NORMAL, text="⏸️ Duraklat")
         self.btn_video_bitir.config(state=tk.NORMAL)
 
-        self.durum_hafizasi = {
-            "alan_sureleri": {alan: 0.0 for alan in self.alanlar},
-            "alan_kare_sayaclari": {alan: 0 for alan in self.alanlar},
-            "hareket_sureleri": {
-                "Kutulara Dogru Uzanma": 0.0, "Malzeme Tasıma (Masaya Dogru)": 0.0,
-                "Malzeme Alma / Kavrama": 0.0, "Montaj / Calısma": 0.0, "Bosta (Bekleme)": 0.0
-            },
-            "son_bilinen_konum": "Bosta",
-            "fsm_tracker": None,
-            "kare_sayaci": 0,
-            "dirsek_acisi_gecmisi": {"sol": [], "sag": []}
-        }
+        self.ctx = AnalysisContext()
+        self.ctx.init_alanlar(self.alanlar)
 
         if self.alanlar:
             try:
                 fsm_config = alanlardan_fsm_config_uret(self.alanlar)
-                self.durum_hafizasi["fsm_tracker"] = MOSTTracker(fsm_config)
+                self.ctx.fsm_tracker = MOSTTracker(fsm_config)
             except Exception as e:
                 print(f"[UYARI] FSM kurulumu başarısız, sıra/TMU takibi olmadan devam edilecek: {e}")
 
@@ -501,7 +492,7 @@ class ErgonomiArayuz:
             ret, kare = self.cap.read()
             if ret:
                 islenmis_kare = el_takip_ve_ergonomi_motoru_kare(
-                    kare, self.alanlar, self.durum_hafizasi, self.kare_suresi, self.fps
+                    kare, self.alanlar, self.ctx, self.kare_suresi, self.fps
                 )
 
                 self.ekranı_guncelle(islenmis_kare)
@@ -543,31 +534,50 @@ class ErgonomiArayuz:
         self.btn_video_durdur.config(state=tk.DISABLED, text="⏸️ Duraklat")
         self.btn_video_bitir.config(state=tk.DISABLED)
         
-        if hasattr(self, 'durum_hafizasi'):
+        if hasattr(self, 'ctx'):
             video_ismi = self.video_adi if self.video_adi else "video_analiz"
-            fsm_tracker = self.durum_hafizasi.get("fsm_tracker")
-            dirsek_gecmisi = self.durum_hafizasi.get("dirsek_acisi_gecmisi")
+            fsm_tracker = self.ctx.fsm_tracker
+            dirsek_gecmisi = {
+                "sol": self.ctx.ergo_state.dirsek_acisi_gecmisi_sol,
+                "sag": self.ctx.ergo_state.dirsek_acisi_gecmisi_sag
+            }
+            govde_gecmisi = self.ctx.ergo_state.govde_acisi_gecmisi
             excel_raporu_kaydet(
                 video_ismi,
-                self.durum_hafizasi["alan_sureleri"],
-                self.durum_hafizasi["hareket_sureleri"],
+                self.ctx.hand_state.alan_sureleri,
+                self.ctx.hand_state.hareket_sureleri,
                 fsm_tracker,
-                dirsek_gecmisi
+                dirsek_gecmisi,
+                govde_gecmisi
             )
 
+            if hasattr(self.ctx, 'fsm_events') and self.ctx.fsm_events:
+                import json
+                with open(f"{video_ismi}_fsm_events.json", "w", encoding="utf-8") as f:
+                    json.dump(self.ctx.fsm_events, f, indent=4)
+
             rapor_metni = "📊 ANALİZ EXCEL DOSYASINA KAYDEDİLDİ!\n\nÖzet Ölçümler:\n"
-            for hareket, sure in self.durum_hafizasi["hareket_sureleri"].items():
+            for hareket, sure in self.ctx.hand_state.hareket_sureleri.items():
                 rapor_metni += f"• {hareket}: {sure:.2f} sn\n"
 
             # Dirsek açısı özeti
             if dirsek_gecmisi:
                 import numpy as _np
-                for taraf, aciler in dirsek_gecmisi.items():
-                    if aciler:
+                for taraf, aciler_tuples in dirsek_gecmisi.items():
+                    if aciler_tuples:
+                        aciler = [a[0] for a in aciler_tuples]
                         ort = _np.mean(aciler)
                         maks = _np.max(aciler)
                         risk = 100.0 * sum(1 for a in aciler if a >= 150) / len(aciler)
                         rapor_metni += f"\n💪 {taraf.capitalize()} dirsek: Ort {ort:.0f}° | Maks {maks:.0f}° | Risk %{risk:.0f}"
+
+            if govde_gecmisi:
+                aciler = [a[0] for a in govde_gecmisi]
+                if aciler:
+                    ort = _np.mean(aciler)
+                    maks = _np.max(aciler)
+                    risk = 100.0 * sum(1 for a in aciler if a >= 60) / len(aciler)  # Öne eğilmede 60+ derece genelde yüksek risk
+                    rapor_metni += f"\n🧍 Gövde: Ort {ort:.0f}° | Maks {maks:.0f}° | Risk %{risk:.0f}"
 
             if fsm_tracker is not None and fsm_tracker.reported_cycles:
                 rapor_metni += f"\n\n🔁 MOST/FSM Tamamlanan Çevrim Sayısı: {len(fsm_tracker.reported_cycles)}\n"

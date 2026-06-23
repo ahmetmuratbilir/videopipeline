@@ -57,6 +57,25 @@ def calculate_angle(a, b, c):
     return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
 
 
+def calculate_trunk_angle(hip, shoulder):
+    """
+    Kalça-omuz hattının dikey eksenden (yukarı vektör) sapma açısını hesaplar.
+    0° = tam dikey (ideal duruş), 90° = tam yatay (öne eğilme).
+    """
+    hip = np.array(hip, dtype=np.float32)
+    shoulder = np.array(shoulder, dtype=np.float32)
+    trunk_vector = shoulder - hip
+    norm = np.linalg.norm(trunk_vector)
+    if norm < 1e-6:
+        return None
+        
+    vertical_vector = np.array([0, -1], dtype=np.float32)  # Görüntü koordinatında "yukarı"
+    
+    cosine_angle = np.dot(trunk_vector, vertical_vector) / (norm * np.linalg.norm(vertical_vector))
+    cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine_angle)))
+
+
 def aci_rengini_al(aci):
     """Ergonomi risk rengi: ≥150° kırmızı · 120-150° sarı · <120° yeşil"""
     if aci >= 150:
@@ -85,8 +104,8 @@ def alanlardan_fsm_config_uret(tanimlanan_alanlar):
             "pinch_threshold": 0.28,
             "release_threshold": 0.40,
             "velocity_threshold": 8.0,
-            "grasp_confirm_frames": 4,
-            "release_confirm_frames": 3
+            "grasp_confirm_time": 0.15,
+            "release_confirm_time": 0.10
         }
     }
 
@@ -120,13 +139,14 @@ def _risk_ikonu(kare, cx, cy, aci):
     cv2.circle(kare, (cx, cy), 9, (255, 255, 255), 1)
 
 
-def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, fsm_recipe, fsm_recipe_idx):
+def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, govde_acisi, fsm_recipe, fsm_recipe_idx):
     """Ana HUD panelini video üzerine çizer.
 
     Parametre açıklamaları:
     - durum          : string, anlık hareket durumu
     - fsm_metrikleri : dict, MOSTTracker.get_metrics() çıktısı (veya None)
     - sol_aci, sag_aci: float veya None, dirsek açıları
+    - govde_acisi    : float veya None, omurganın dikeyden sapma açısı
     - fsm_recipe     : list, reçete adımları (["Kutu1", "Kutu2", "Assembly Area"])
     - fsm_recipe_idx : int, şu anki reçete indeksi
     """
@@ -134,7 +154,7 @@ def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, fsm_recipe, fsm_recip
 
     # Panel boyutu ve konumu (sol alt köşe)
     panel_x1 = 10
-    panel_y1 = h - 230
+    panel_y1 = h - 250
     panel_x2 = 420
     panel_y2 = h - 10
 
@@ -179,6 +199,16 @@ def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, fsm_recipe, fsm_recip
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, aci_rengini_al(sag_aci), 1)
     else:
         cv2.putText(kare, "Sag dirsek: --", (ic_x + 24, satir_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 120, 120), 1)
+
+    satir_y += 22
+    if govde_acisi is not None:
+        _risk_ikonu(kare, ic_x + 8, satir_y - 5, govde_acisi)
+        cv2.putText(kare, f"Govde (Egilme): {govde_acisi:.0f}",
+                    (ic_x + 24, satir_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, aci_rengini_al(govde_acisi), 1)
+    else:
+        cv2.putText(kare, "Govde (Egilme): --", (ic_x + 24, satir_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 120, 120), 1)
     satir_y += 26
 
@@ -240,14 +270,11 @@ def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, fsm_recipe, fsm_recip
 
 # ── Ana Analiz Fonksiyonu ─────────────────────────────────────────────────────
 
-def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, kare_suresi, fps):
+def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi, fps):
     yukseklik, genislik, _ = kare.shape
-    sure_anahtari = "alan_sureleri1" if "alan_sureleri1" in durum_hafizasi else "alan_sureleri"
 
-    durum_hafizasi.setdefault("kare_sayaci", 0)
-    durum_hafizasi["kare_sayaci"] += 1
-    kare_sayaci = durum_hafizasi["kare_sayaci"]
-    durum_hafizasi.setdefault("dirsek_acisi_gecmisi", {"sol": [], "sag": []})
+    ctx.kare_sayaci += 1
+    kare_sayaci = ctx.kare_sayaci
 
     # 1. Alan Poligonlarını Çizme
     for alan_adi, veri in tanimlanan_alanlar.items():
@@ -257,7 +284,7 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
         cv2.polylines(kare, [pts], isClosed=True, color=renk, thickness=2)
         etiket_x, etiket_y = int(pts[:, 0].min()), int(pts[:, 1].min())
         cv2.putText(kare,
-                    f"{alan_adi}: {durum_hafizasi[sure_anahtari][alan_adi]:.2f} sn",
+                    f"{alan_adi}: {ctx.hand_state.alan_sureleri[alan_adi]:.2f} sn",
                     (etiket_x, etiket_y - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, renk, 2)
 
@@ -281,12 +308,18 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
                     if point_in_polygon((bx, by), alan_poligonunu_al(veri)):
                         tespit_edilen_alanlar.append(alan_adi)
 
-            if "fsm_tracker" in durum_hafizasi and durum_hafizasi["fsm_tracker"] is not None:
+            if ctx.fsm_tracker is not None:
                 try:
                     ilk_el = el_landmarklarini_sozluge_cevir(sonuclar.multi_hand_landmarks[0])
-                    durum_hafizasi["fsm_tracker"].update(ilk_el, (yukseklik, genislik))
+                    ctx.fsm_tracker.update(ilk_el, (yukseklik, genislik))
                 except Exception as e:
                     print(f"[UYARI] FSM güncellemesi başarısız: {e}")
+        else:
+            if ctx.fsm_tracker is not None:
+                try:
+                    ctx.fsm_tracker.update(None, (yukseklik, genislik))
+                except Exception as e:
+                    print(f"[UYARI] FSM (None) güncellemesi başarısız: {e}")
 
         # ── 2b. Pose (her 2 karede bir) ─────────────────────────────────────
         if kare_sayaci % 2 == 0:
@@ -305,12 +338,17 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
                     sag_omuz   = lm_px(PL.RIGHT_SHOULDER)
                     sag_dirsek = lm_px(PL.RIGHT_ELBOW)
                     sag_bilek  = lm_px(PL.RIGHT_WRIST)
+                    sol_kalca  = lm_px(PL.LEFT_HIP)
 
                     sol_aci = calculate_angle(sol_omuz, sol_dirsek, sol_bilek)
                     sag_aci = calculate_angle(sag_omuz, sag_dirsek, sag_bilek)
+                    govde_acisi = calculate_trunk_angle(sol_kalca, sol_omuz)
 
-                    durum_hafizasi["dirsek_acisi_gecmisi"]["sol"].append(sol_aci)
-                    durum_hafizasi["dirsek_acisi_gecmisi"]["sag"].append(sag_aci)
+                    ctx.ergo_state.is_pose_fresh = True
+                    ctx.ergo_state.dirsek_acisi_gecmisi_sol.append((sol_aci, True))
+                    ctx.ergo_state.dirsek_acisi_gecmisi_sag.append((sag_aci, True))
+                    if govde_acisi is not None:
+                        ctx.ergo_state.govde_acisi_gecmisi.append((govde_acisi, True))
 
                     # İskelet çizimi
                     for (p1, p2) in [(sol_omuz, sol_dirsek), (sol_dirsek, sol_bilek),
@@ -328,10 +366,19 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
                                 (sag_dirsek[0] + 8, sag_dirsek[1]),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, aci_rengini_al(sag_aci), 2)
 
-                    durum_hafizasi["_son_sol_aci"] = sol_aci
-                    durum_hafizasi["_son_sag_aci"] = sag_aci
+                    ctx.ergo_state.son_sol_aci = sol_aci
+                    ctx.ergo_state.son_sag_aci = sag_aci
+                    ctx.ergo_state.son_govde_acisi = govde_acisi
             except Exception as e:
                 print(f"[UYARI] Pose analizi başarısız: {e}")
+        else:
+            ctx.ergo_state.is_pose_fresh = False
+            if ctx.ergo_state.son_sol_aci is not None:
+                ctx.ergo_state.dirsek_acisi_gecmisi_sol.append((ctx.ergo_state.son_sol_aci, False))
+            if ctx.ergo_state.son_sag_aci is not None:
+                ctx.ergo_state.dirsek_acisi_gecmisi_sag.append((ctx.ergo_state.son_sag_aci, False))
+            if ctx.ergo_state.son_govde_acisi is not None:
+                ctx.ergo_state.govde_acisi_gecmisi.append((ctx.ergo_state.son_govde_acisi, False))
 
     # 3. Çift El Öncelik Filtresi
     if tespit_edilen_alanlar:
@@ -341,7 +388,7 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
 
     # --- Simülasyon (kütüphane yoksa) ----------------------------------------
     if not MEDIAPIPE_HAZIR and not elin_oldugu_aktif_alan:
-        toplam = sum(durum_hafizasi["hareket_sureleri"].values())
+        toplam = sum(ctx.hand_state.hareket_sureleri.values())
         alan_listesi = list(tanimlanan_alanlar.keys())
         if len(alan_listesi) > 0 and 2.0 < toplam <= 6.0:
             elin_oldugu_aktif_alan = alan_listesi[0]
@@ -354,28 +401,28 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
         alan_tipi = tanimlanan_alanlar[elin_oldugu_aktif_alan]["tip"]
         if alan_tipi == "Calisma Alanı":
             o_anki_durum = "Montaj / Calısma"
-            durum_hafizasi["son_bilinen_konum"] = "Calisma"
+            ctx.hand_state.son_bilinen_konum = "Calisma"
         else:
-            durum_hafizasi["alan_kare_sayaclari"][elin_oldugu_aktif_alan] += 1
-            if durum_hafizasi["alan_kare_sayaclari"][elin_oldugu_aktif_alan] >= 4:
+            ctx.hand_state.alan_kare_sayaclari[elin_oldugu_aktif_alan] += 1
+            if ctx.hand_state.alan_kare_sayaclari[elin_oldugu_aktif_alan] >= 4:
                 o_anki_durum = "Malzeme Alma / Kavrama"
-                durum_hafizasi["son_bilinen_konum"] = "Alet"
+                ctx.hand_state.son_bilinen_konum = "Alet"
             else:
                 o_anki_durum = "Kutulara Dogru Uzanma"
-        durum_hafizasi[sure_anahtari][elin_oldugu_aktif_alan] += kare_suresi
+        ctx.hand_state.alan_sureleri[elin_oldugu_aktif_alan] += kare_suresi
     else:
         for alan in tanimlanan_alanlar:
-            durum_hafizasi["alan_kare_sayaclari"][alan] = 0
-        if durum_hafizasi["son_bilinen_konum"] == "Alet":
+            ctx.hand_state.alan_kare_sayaclari[alan] = 0
+        if ctx.hand_state.son_bilinen_konum == "Alet":
             o_anki_durum = "Malzeme Tasıma (Masaya Dogru)"
-        elif durum_hafizasi["son_bilinen_konum"] == "Calisma":
+        elif ctx.hand_state.son_bilinen_konum == "Calisma":
             o_anki_durum = "Kutulara Dogru Uzanma"
         else:
             o_anki_durum = "Bosta (Bekleme)"
 
     # 5. Süre
-    if o_anki_durum in durum_hafizasi["hareket_sureleri"]:
-        durum_hafizasi["hareket_sureleri"][o_anki_durum] += kare_suresi
+    if o_anki_durum in ctx.hand_state.hareket_sureleri:
+        ctx.hand_state.hareket_sureleri[o_anki_durum] += kare_suresi
 
     # 6. Video süresi (sol üst)
     cv2.putText(kare,
@@ -386,18 +433,27 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
     fsm_metrikleri = None
     fsm_recipe = []
     fsm_recipe_idx = 0
-    if "fsm_tracker" in durum_hafizasi and durum_hafizasi["fsm_tracker"] is not None:
-        tracker = durum_hafizasi["fsm_tracker"]
+    if ctx.fsm_tracker is not None:
+        tracker = ctx.fsm_tracker
         fsm_metrikleri = tracker.get_metrics()
         fsm_recipe = getattr(tracker, "recipe", [])
         fsm_recipe_idx = getattr(tracker, "current_recipe_idx", 0)
+
+        # Event tracking for Phase 6
+        yeni_durum = tracker.state
+        if ctx.fsm_eski_durum == "GRASP" and yeni_durum == "MOVE":
+            ctx.fsm_events.append({"type": "GRASP", "timestamp": round(kare_sayaci * kare_suresi, 3)})
+        elif ctx.fsm_eski_durum == "PLACE" and (yeni_durum == "REACH" or yeni_durum == "RETURNING_HOME" or yeni_durum == "IDLE"):
+            ctx.fsm_events.append({"type": "PLACE", "timestamp": round(kare_sayaci * kare_suresi, 3)})
+        ctx.fsm_eski_durum = yeni_durum
 
     hud_ciz(
         kare,
         o_anki_durum,
         fsm_metrikleri,
-        durum_hafizasi.get("_son_sol_aci"),
-        durum_hafizasi.get("_son_sag_aci"),
+        ctx.ergo_state.son_sol_aci,
+        ctx.ergo_state.son_sag_aci,
+        ctx.ergo_state.son_govde_acisi,
         fsm_recipe,
         fsm_recipe_idx
     )
@@ -407,8 +463,7 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, durum_hafizasi, k
 
 # ── Rapor Kaydetme ────────────────────────────────────────────────────────────
 
-def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri,
-                     fsm_tracker, dirsek_acisi_gecmisi):
+def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi):
     """openpyxl ile renkli, biçimlendirilmiş Excel (.xlsx) raporu oluşturur."""
     if not XLSX_HAZIR:
         return
@@ -483,15 +538,18 @@ def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri,
     if dirsek_acisi_gecmisi:
         baslik_satir(ws, satir, "DİRSEK AÇI ANALİZİ (Ergonomi)")
         satir += 1
-        ust_baslik(ws, satir, ["Kol", "Ort Açı (°)", "Maks Açı (°)", "Yüksek Risk (%)"])
+        ust_baslik(ws, satir, ["Kol", "Ort Açı (°)", "Maks Açı (°)", "Yüksek Risk (%)", "Not"])
         satir += 1
-        for taraf, aciler in dirsek_acisi_gecmisi.items():
-            if not aciler:
+        for taraf, aciler_tuples in dirsek_acisi_gecmisi.items():
+            if not aciler_tuples:
                 continue
+            aciler = [a[0] for a in aciler_tuples]
+            interpolated = any(not a[1] for a in aciler_tuples)
             ort  = float(np.mean(aciler))
             maks = float(np.max(aciler))
             risk = 100.0 * sum(1 for a in aciler if a >= 150) / len(aciler)
-            for c, val in enumerate([taraf.capitalize(), f"{ort:.1f}", f"{maks:.1f}", f"{risk:.1f}%"], 1):
+            not_str = "Tahmini (Interpolated)" if interpolated else "Gerçek Zamanlı"
+            for c, val in enumerate([taraf.capitalize(), f"{ort:.1f}", f"{maks:.1f}", f"{risk:.1f}%", not_str], 1):
                 cell = ws.cell(satir, c, val)
                 cell.border = kenarlık
                 cell.alignment = Alignment(horizontal="center" if c > 1 else "left")
@@ -499,6 +557,33 @@ def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri,
             if maks >= 150:
                 ws.cell(satir, 3).fill = kirmizi
             elif maks >= 120:
+                ws.cell(satir, 3).fill = sari
+            else:
+                ws.cell(satir, 3).fill = yesil
+            satir += 1
+
+    if govde_acisi_gecmisi:
+        baslik_satir(ws, satir, "GÖVDE AÇI ANALİZİ (Ergonomi)")
+        satir += 1
+        ust_baslik(ws, satir, ["Bölge", "Ort Açı (°)", "Maks Açı (°)", "Yüksek Risk (%)", "Not"])
+        satir += 1
+        
+        aciler = [a[0] for a in govde_acisi_gecmisi]
+        if aciler:
+            interpolated = any(not a[1] for a in govde_acisi_gecmisi)
+            ort  = float(np.mean(aciler))
+            maks = float(np.max(aciler))
+            risk = 100.0 * sum(1 for a in aciler if a >= 60) / len(aciler)
+            not_str = "Tahmini (Interpolated)" if interpolated else "Gerçek Zamanlı"
+            
+            for c, val in enumerate(["Gövde", f"{ort:.1f}", f"{maks:.1f}", f"{risk:.1f}%", not_str], 1):
+                cell = ws.cell(satir, c, val)
+                cell.border = kenarlık
+                cell.alignment = Alignment(horizontal="center" if c > 1 else "left")
+            
+            if maks >= 60:
+                ws.cell(satir, 3).fill = kirmizi
+            elif maks >= 45:
                 ws.cell(satir, 3).fill = sari
             else:
                 ws.cell(satir, 3).fill = yesil
@@ -537,7 +622,7 @@ def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri,
 
 
 def excel_raporu_kaydet(video_adi, alan_sureleri, hareket_sureleri,
-                        fsm_tracker=None, dirsek_acisi_gecmisi=None):
+                        fsm_tracker=None, dirsek_acisi_gecmisi=None, govde_acisi_gecmisi=None):
     """CSV + XLSX (eğer openpyxl yüklüyse) raporları oluşturur."""
 
     # ── CSV (her zaman) ────────────────────────────────────────────────────────
@@ -556,14 +641,32 @@ def excel_raporu_kaydet(video_adi, alan_sureleri, hareket_sureleri,
 
         if dirsek_acisi_gecmisi:
             yazici.writerow(["DİRSEK AÇI ANALİZİ (Ergonomi)", "", ""])
-            for taraf, aciler in dirsek_acisi_gecmisi.items():
-                if aciler:
+            for taraf, aciler_tuples in dirsek_acisi_gecmisi.items():
+                if aciler_tuples:
+                    aciler = [a[0] for a in aciler_tuples]
+                    interpolated = any(not a[1] for a in aciler_tuples)
                     ort  = np.mean(aciler)
                     maks = np.max(aciler)
                     risk = 100.0 * sum(1 for a in aciler if a >= 150) / len(aciler)
                     yazici.writerow(["", f"{taraf.capitalize()} dirsek - Ort (°)",  f"{ort:.1f}"])
                     yazici.writerow(["", f"{taraf.capitalize()} dirsek - Maks (°)", f"{maks:.1f}"])
                     yazici.writerow(["", f"{taraf.capitalize()} dirsek - Risk (%)", f"{risk:.1f}"])
+                    if interpolated:
+                        yazici.writerow(["", f"{taraf.capitalize()} dirsek - Veri Kaynağı", "Tahmini (Interpolated)"])
+
+        if govde_acisi_gecmisi:
+            yazici.writerow(["GÖVDE AÇI ANALİZİ (Ergonomi)", "", ""])
+            aciler = [a[0] for a in govde_acisi_gecmisi]
+            if aciler:
+                interpolated = any(not a[1] for a in govde_acisi_gecmisi)
+                ort  = np.mean(aciler)
+                maks = np.max(aciler)
+                risk = 100.0 * sum(1 for a in aciler if a >= 60) / len(aciler)
+                yazici.writerow(["", "Gövde - Ort (°)",  f"{ort:.1f}"])
+                yazici.writerow(["", "Gövde - Maks (°)", f"{maks:.1f}"])
+                yazici.writerow(["", "Gövde - Risk (%)", f"{risk:.1f}"])
+                if interpolated:
+                    yazici.writerow(["", "Gövde - Veri Kaynağı", "Tahmini (Interpolated)"])
 
     # FSM çevrim CSV
     if fsm_tracker is not None and getattr(fsm_tracker, "reported_cycles", None):
@@ -581,7 +684,6 @@ def excel_raporu_kaydet(video_adi, alan_sureleri, hareket_sureleri,
     # ── XLSX (openpyxl varsa) ──────────────────────────────────────────────────
     if XLSX_HAZIR:
         try:
-            _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri,
-                             fsm_tracker, dirsek_acisi_gecmisi)
+            _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi)
         except Exception as e:
-            print(f"[UYARI] Excel (xlsx) yazılamadı: {e}")
+            print(f"[UYARI] Excel (.xlsx) dosyası yazılamadı: {e}")
