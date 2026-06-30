@@ -114,6 +114,82 @@ def el_landmarklarini_sozluge_cevir(el_noktalari):
     return [{"x": lm.x, "y": lm.y} for lm in el_noktalari.landmark]
 
 
+def cycle_tracker_guncelle(ctx, tanimlanan_alanlar, tum_el_noktalari, kare_zamani, yukseklik, genislik):
+    """
+    Çevrim süresini ve ürün sayısını takip eder.
+    İki el senaryosunda OR mantığı: herhangi bir el alanda mı diye bakılır.
+    """
+    ct = ctx.cycle_tracker
+
+    # Alan poligonlarını tiple bul
+    yesil_poligonlar = [
+        alan_poligonunu_al(v) for v in tanimlanan_alanlar.values()
+        if v["tip"] == "Calisma Alanı"
+    ]
+    bitis_poligonlar = [
+        alan_poligonunu_al(v) for v in tanimlanan_alanlar.values()
+        if v["tip"] == "Bitis Alanı"
+    ]
+
+    if not yesil_poligonlar and not bitis_poligonlar:
+        return  # Tanımlı alan yoksa işlem yapma
+
+    # Her el için merkezi hesapla (wrist noktası)
+    el_merkezleri = []
+    for el_noktalari in tum_el_noktalari:
+        bilek = el_noktalari.landmark[0]
+        el_merkezleri.append((int(bilek.x * genislik), int(bilek.y * yukseklik)))
+
+    # OR mantığı: herhangi bir el alanda mı?
+    el_yesilde = any(
+        any(point_in_polygon(merkez, poly) for poly in yesil_poligonlar)
+        for merkez in el_merkezleri
+    ) if el_merkezleri and yesil_poligonlar else False
+
+    el_bitis_alaninda = any(
+        any(point_in_polygon(merkez, poly) for poly in bitis_poligonlar)
+        for merkez in el_merkezleri
+    ) if el_merkezleri and bitis_poligonlar else False
+
+    # 1. İlk yeşil giriş koru
+    if el_yesilde and not ct.ilk_yesil_giris_yapildi:
+        ct.ilk_yesil_giris_yapildi = True
+
+    # 2. Yeşil'den çıkış → döngü başlar
+    if not el_yesilde and ct.yesil_alanda and ct.ilk_yesil_giris_yapildi:
+        ct.dongu_baslangic_zamani = kare_zamani
+        ct.son_bitis_sonrasi_yesile_gidildi = True
+
+    # 3. Bitiş alanına yeni giriş
+    if el_bitis_alaninda and not ct.bitis_alaninda:
+        if ct.son_bitis_sonrasi_yesile_gidildi:
+            ct.bitis_giris_zamani = kare_zamani
+            ct.bu_giriste_sayildi = False
+        # Yeşile uğramadan geldi: girişi yok say (bayraklar değişmez)
+
+    # 4. Debounce + sayım
+    if (el_bitis_alaninda
+            and ct.ilk_yesil_giris_yapildi
+            and ct.son_bitis_sonrasi_yesile_gidildi
+            and not ct.bu_giriste_sayildi):
+        bitis_kalma = kare_zamani - ct.bitis_giris_zamani
+        if bitis_kalma >= ct.bitis_debounce_sure:
+            sure = kare_zamani - ct.dongu_baslangic_zamani
+            if 0.5 < sure <= ct.max_dongu_sure:
+                ct.dongu_sureleri.append(round(sure, 3))
+                ct.urun_sayisi += 1
+                ct.bu_giriste_sayildi = True
+                ct.son_bitis_sonrasi_yesile_gidildi = False
+            elif sure > ct.max_dongu_sure:
+                ct.atlanan_dongu_sureleri.append(round(sure, 3))
+                ct.bu_giriste_sayildi = True
+                print(f"[UYARI] Şüpheli uzun döngü ({sure:.1f}s) atlandı.")
+
+    # 5. Durum güncelleme — EN SONDA
+    ct.yesil_alanda = el_yesilde
+    ct.bitis_alaninda = el_bitis_alaninda
+
+
 # ── Aşama 4: HUD Çizim Yardımcıları ─────────────────────────────────────────
 
 def _yari_saydam_dikdortgen(kare, x1, y1, x2, y2, renk=(0, 0, 0), alfa=0.55):
@@ -268,6 +344,50 @@ def hud_ciz(kare, durum, fsm_metrikleri, sol_aci, sag_aci, govde_acisi, fsm_reci
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (120, 120, 120), 1)
 
 
+def hud_cevrim_ciz(kare, ctx):
+    """Çevrim süresi ve ürün sayısı HUD panelini sağ alt köşeye çizer."""
+    ct = ctx.cycle_tracker
+    h, w = kare.shape[:2]
+
+    panel_x1 = w - 240
+    panel_y1 = h - 150
+    panel_x2 = w - 10
+    panel_y2 = h - 10
+
+    _yari_saydam_dikdortgen(kare, panel_x1, panel_y1, panel_x2, panel_y2,
+                            renk=(10, 20, 10), alfa=0.65)
+    cv2.rectangle(kare, (panel_x1, panel_y1), (panel_x2, panel_y2), (60, 180, 60), 1)
+
+    ic_x = panel_x1 + 10
+    y = panel_y1 + 18
+
+    cv2.putText(kare, "ÜRÜN TAKİBİ", (ic_x, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 255, 100), 1)
+    y += 22
+
+    cv2.putText(kare, f"Urun: {ct.urun_sayisi}", (ic_x, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 180), 2)
+    y += 22
+
+    if ct.dongu_sureleri:
+        cv2.putText(kare, f"Cevrim Ort: {ct.cevrim_suresi:.2f}s", (ic_x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
+        y += 20
+        sapma = ct.standart_sapma
+        sapma_str = f"+/-{sapma:.2f}s" if sapma is not None else "N/A"
+        cv2.putText(kare, f"Sapma: {sapma_str}", (ic_x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 220, 180), 1)
+        y += 20
+        # Son 3 döngü
+        son3 = ct.dongu_sureleri[-3:]
+        son3_str = " | ".join(f"{s:.1f}" for s in son3)
+        cv2.putText(kare, f"Son: {son3_str}", (ic_x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 200, 160), 1)
+    else:
+        cv2.putText(kare, "Henuz dongu yok", (ic_x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (120, 160, 120), 1)
+
+
 # ── Ana Analiz Fonksiyonu ─────────────────────────────────────────────────────
 
 def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi, fps):
@@ -278,13 +398,20 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi,
 
     # 1. Alan Poligonlarını Çizme
     for alan_adi, veri in tanimlanan_alanlar.items():
-        renk = (0, 255, 0) if veri["tip"] == "Calisma Alanı" else (255, 0, 0)
+        if veri["tip"] == "Calisma Alanı":
+            renk = (0, 255, 0)
+        elif veri["tip"] == "Alet Alanı":
+            renk = (0, 0, 255)
+        elif veri["tip"] == "Bitis Alanı":
+            renk = (255, 100, 0)
+        else:
+            renk = (128, 128, 128)
         poligon = alan_poligonunu_al(veri)
         pts = np.array(poligon, dtype=np.int32)
         cv2.polylines(kare, [pts], isClosed=True, color=renk, thickness=2)
         etiket_x, etiket_y = int(pts[:, 0].min()), int(pts[:, 1].min())
         cv2.putText(kare,
-                    f"{alan_adi}: {ctx.hand_state.alan_sureleri[alan_adi]:.2f} sn",
+                    f"{alan_adi}: {ctx.hand_state.alan_sureleri.get(alan_adi, 0):.2f} sn",
                     (etiket_x, etiket_y - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, renk, 2)
 
@@ -458,12 +585,30 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi,
         fsm_recipe_idx
     )
 
+    # 8. Çevrim Takip (Bitiş Alanı)
+    tum_el_noktalari = []
+    if MEDIAPIPE_HAZIR:
+        try:
+            rgb_kare = cv2.cvtColor(kare, cv2.COLOR_BGR2RGB)
+            el_sonuclari = mp_hands.Hands(
+                static_image_mode=False, max_num_hands=2,
+                min_detection_confidence=0.5, min_tracking_confidence=0.5
+            ).process(rgb_kare)
+            if el_sonuclari.multi_hand_landmarks:
+                tum_el_noktalari = el_sonuclari.multi_hand_landmarks
+        except Exception:
+            pass
+
+    kare_zamani = kare_sayaci * kare_suresi
+    cycle_tracker_guncelle(ctx, tanimlanan_alanlar, tum_el_noktalari, kare_zamani, yukseklik, genislik)
+    hud_cevrim_ciz(kare, ctx)
+
     return kare
 
 
 # ── Rapor Kaydetme ────────────────────────────────────────────────────────────
 
-def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi):
+def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi, cycle_tracker=None):
     """openpyxl ile renkli, biçimlendirilmiş Excel (.xlsx) raporu oluşturur."""
     if not XLSX_HAZIR:
         return
@@ -616,13 +761,56 @@ def _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, di
                 for c in range(1, 7):
                     ws2.cell(r, c).fill = kirmizi
 
+    # ── Sayfa 3: Çevrim Süresi (Cycle Time) ────────────────────────────────────
+    if cycle_tracker is not None and (cycle_tracker.dongu_sureleri or cycle_tracker.atlanan_dongu_sureleri):
+        ws3 = wb.create_sheet("Döngü & Çevrim")
+        ust_baslik(ws3, 1, ["Döngü No", "Süre (sn)", "Ort.'dan Sapma", "Not"])
+        for c in ['A', 'B', 'C', 'D']:
+            ws3.column_dimensions[c].width = 18
+
+        r = 2
+        ort = cycle_tracker.cevrim_suresi
+        
+        # Geçerli döngüler
+        for i, sure in enumerate(cycle_tracker.dongu_sureleri, 1):
+            sapma = sure - ort
+            sapma_str = f"{'+' if sapma>0 else ''}{sapma:.2f}s"
+            
+            for c, val in enumerate([i, f"{sure:.2f}s", sapma_str, "—"], 1):
+                cell = ws3.cell(r, c, val)
+                cell.border = kenarlık
+                cell.alignment = Alignment(horizontal="center")
+            r += 1
+
+        # Atlanan (aykırı) döngüler
+        for sure in cycle_tracker.atlanan_dongu_sureleri:
+            for c, val in enumerate(["Atlandı", f"{sure:.2f}s", "—", "⚠️ Aykırı"], 1):
+                cell = ws3.cell(r, c, val)
+                cell.border = kenarlık
+                cell.alignment = Alignment(horizontal="center")
+            ws3.cell(r, 4).fill = sari
+            r += 1
+
+        r += 1
+        # Özet tablosu
+        ws3.cell(r, 1, "Toplam Ürün").font = Font(bold=True)
+        ws3.cell(r, 2, cycle_tracker.urun_sayisi).font = Font(bold=True)
+        r += 1
+        ws3.cell(r, 1, "Ort. Çevrim").font = Font(bold=True)
+        ws3.cell(r, 2, f"{ort:.2f}s").font = Font(bold=True)
+        r += 1
+        sapma_val = cycle_tracker.standart_sapma
+        sapma_text = f"±{sapma_val:.2f}s" if sapma_val is not None else "N/A"
+        ws3.cell(r, 1, "Std. Sapma").font = Font(bold=True)
+        ws3.cell(r, 2, sapma_text).font = Font(bold=True)
+
     dosya_adi = f"{video_adi}_rapor.xlsx"
     wb.save(dosya_adi)
     print(f"[RAPOR] Excel kaydedildi: {dosya_adi}")
 
 
 def excel_raporu_kaydet(video_adi, alan_sureleri, hareket_sureleri,
-                        fsm_tracker=None, dirsek_acisi_gecmisi=None, govde_acisi_gecmisi=None):
+                        fsm_tracker=None, dirsek_acisi_gecmisi=None, govde_acisi_gecmisi=None, cycle_tracker=None):
     """CSV + XLSX (eğer openpyxl yüklüyse) raporları oluşturur."""
 
     # ── CSV (her zaman) ────────────────────────────────────────────────────────
@@ -684,6 +872,6 @@ def excel_raporu_kaydet(video_adi, alan_sureleri, hareket_sureleri,
     # ── XLSX (openpyxl varsa) ──────────────────────────────────────────────────
     if XLSX_HAZIR:
         try:
-            _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi)
+            _xlsx_raporu_yaz(video_adi, alan_sureleri, hareket_sureleri, fsm_tracker, dirsek_acisi_gecmisi, govde_acisi_gecmisi, cycle_tracker)
         except Exception as e:
             print(f"[UYARI] Excel (.xlsx) dosyası yazılamadı: {e}")

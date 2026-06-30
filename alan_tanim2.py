@@ -60,8 +60,11 @@ class ErgonomiArayuz:
         self.btn_calisma_sec = tk.Button(self.sol_panel, text="🟢 Çalışma Alanı Tanımla", command=lambda: self.alan_ciz("Calisma Alanı"), bg="#2ecc71", fg="white", font=("Arial", 10, "bold"), relief=tk.FLAT, state=tk.DISABLED, pady=5)
         self.btn_calisma_sec.pack(fill=tk.X, padx=15, pady=5)
 
-        self.btn_alet_sec = tk.Button(self.sol_panel, text="🔵 Alet Alanı Tanımla", command=lambda: self.alan_ciz("Alet Alanı"), bg="#3498db", fg="white", font=("Arial", 10, "bold"), relief=tk.FLAT, state=tk.DISABLED, pady=5)
+        self.btn_alet_sec = tk.Button(self.sol_panel, text="🔴 Alet Alanı Tanımla", command=lambda: self.alan_ciz("Alet Alanı"), bg="#e74c3c", fg="white", font=("Arial", 10, "bold"), relief=tk.FLAT, state=tk.DISABLED, pady=5)
         self.btn_alet_sec.pack(fill=tk.X, padx=15, pady=5)
+
+        self.btn_bitis_sec = tk.Button(self.sol_panel, text="🔵 Bitiş Alanı Tanımla", command=lambda: self.alan_ciz("Bitis Alanı"), bg="#2980b9", fg="white", font=("Arial", 10, "bold"), relief=tk.FLAT, state=tk.DISABLED, pady=5)
+        self.btn_bitis_sec.pack(fill=tk.X, padx=15, pady=5)
 
         ttk.Separator(self.sol_panel, orient='horizontal').pack(fill=tk.X, padx=15, pady=15)
 
@@ -133,6 +136,7 @@ class ErgonomiArayuz:
                 
                 self.btn_calisma_sec.config(state=tk.NORMAL)
                 self.btn_alet_sec.config(state=tk.NORMAL)
+                self.btn_bitis_sec.config(state=tk.NORMAL)
                 self.btn_kaydet.config(state=tk.NORMAL)
                 self.btn_video_baslat.config(state=tk.NORMAL)
             else:
@@ -201,15 +205,14 @@ class ErgonomiArayuz:
         self.window.wait_window(secim_penceresi)
 
     def listeyi_yenile(self):
-        """self.alanlar sözlüğünü baz alarak listeyi numaralı şekilde yeniden çizer.
-        Alet Alanı tipindeki öğeler tanımlama/alım sırasına göre 1, 2, 3... şeklinde numaralanır.
-        Çalışma Alanı tipindeki öğeler sıraya girmez, ayrı bir işaretle gösterilir."""
         self.lst_alanlar.delete(0, tk.END)
         alet_sira_no = 0
         for alan_adi, veri in self.alanlar.items():
             if veri["tip"] == "Alet Alanı":
                 alet_sira_no += 1
                 satir = f"{alet_sira_no}) [Alet] {alan_adi}"
+            elif veri["tip"] == "Bitis Alanı":
+                satir = f"🔵 [Bitiş] {alan_adi}"
             else:
                 satir = f"✓ [Çalışma] {alan_adi}"
             self.lst_alanlar.insert(tk.END, satir)
@@ -304,7 +307,14 @@ class ErgonomiArayuz:
 
         alet_sira_no = 0
         for alan_adi, veri in self.alanlar.items():
-            renk = (0, 255, 0) if veri["tip"] == "Calisma Alanı" else (255, 0, 0)
+            if veri["tip"] == "Calisma Alanı":
+                renk = (0, 255, 0)       # BGR — Yeşil
+            elif veri["tip"] == "Alet Alanı":
+                renk = (0, 0, 255)       # BGR — Kırmızı
+            elif veri["tip"] == "Bitis Alanı":
+                renk = (255, 100, 0)     # BGR — Mavi
+            else:
+                renk = (128, 128, 128)   # Bilinmeyen — gri
 
             if "polygon" in veri and veri["polygon"]:
                 pts = np.array(veri["polygon"], dtype=np.int32)
@@ -548,7 +558,8 @@ class ErgonomiArayuz:
                 self.ctx.hand_state.hareket_sureleri,
                 fsm_tracker,
                 dirsek_gecmisi,
-                govde_gecmisi
+                govde_gecmisi,
+                self.ctx.cycle_tracker
             )
 
             if hasattr(self.ctx, 'fsm_events') and self.ctx.fsm_events:
@@ -584,7 +595,20 @@ class ErgonomiArayuz:
                 son_cevrim = fsm_tracker.reported_cycles[-1]
                 rapor_metni += f"   Son çevrim: {son_cevrim['duration_sec']} sn ({son_cevrim['tmu']} TMU), Sıra doğru mu: {son_cevrim['sequence_ok']}\n"
 
+            ct = self.ctx.cycle_tracker
+            if ct.urun_sayisi > 0:
+                sapma = ct.standart_sapma
+                sapma_str = f"±{sapma:.2f} sn" if sapma is not None else "N/A (az veri)"
+                rapor_metni += f"\n\n📦 ÜRÜN SAYISI: {ct.urun_sayisi}\n"
+                rapor_metni += f"   Ort. Çevrim Süresi: {ct.cevrim_suresi:.2f} sn\n"
+                rapor_metni += f"   Std. Sapma (n-1): {sapma_str}\n"
+                if ct.atlanan_dongu_sureleri:
+                    rapor_metni += f"   Aykırı (atlandı): {len(ct.atlanan_dongu_sureleri)} adet\n"
+
             messagebox.showinfo("Rapor Hazır", rapor_metni)
+
+            # CycleTracker'ı sıfırla
+            self.ctx.cycle_tracker.reset()
 
         if self.ilk_kare is not None:
             self.ekranı_guncelle(self.ilk_kare)

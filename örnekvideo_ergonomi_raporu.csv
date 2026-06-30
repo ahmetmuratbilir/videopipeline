@@ -1,0 +1,28 @@
+﻿Analiz Tipi;Islem / Bölge Adı;Süre / Değer
+HAREKET ANALIZI;;
+;Kutulara Dogru Uzanma;0.12
+;Malzeme Tasıma (Masaya Dogru);2.17
+;Malzeme Alma / Kavrama;0.17
+;Montaj / Calısma;0.00
+;Bosta (Bekleme);7.54
+BÖLGE/ALAN ANALIZI;;
+;calisma alani;0.00
+;a1;0.00
+;a2;0.00
+;a3;0.00
+;matkap;0.00
+;kablo;0.29
+DİRSEK AÇI ANALİZİ (Ergonomi);;
+;Sol dirsek - Ort (°);110.0
+;Sol dirsek - Maks (°);179.6
+;Sol dirsek - Risk (%);29.5
+;Sol dirsek - Veri Kaynağı;Tahmini (Interpolated)
+;Sag dirsek - Ort (°);116.7
+;Sag dirsek - Maks (°);177.6
+;Sag dirsek - Risk (%);46.6
+;Sag dirsek - Veri Kaynağı;Tahmini (Interpolated)
+GÖVDE AÇI ANALİZİ (Ergonomi);;
+;Gövde - Ort (°);13.8
+;Gövde - Maks (°);20.1
+;Gövde - Risk (%);0.0
+;Gövde - Veri Kaynağı;Tahmini (Interpolated)
