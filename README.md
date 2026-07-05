@@ -1,70 +1,76 @@
-# Endüstriyel Ergonomi ve Alan Tanımlama Paneli (Video Pipeline)
+# Endüstriyel Ergonomi, Zaman Etüdü ve Alan Analiz Paneli (Video Pipeline)
 
-Bu proje, fabrika montaj hatları ve endüstriyel iş istasyonlarındaki operatör hareketlerini analiz etmek için geliştirilmiş yapay zeka destekli bir bilgisayarlı görü ve ergonomi analiz yazılımıdır. 
+Bu proje; fabrika montaj hatları ve endüstriyel iş istasyonlarındaki operatör hareketlerini analiz etmek amacıyla geliştirilmiş yapay zeka destekli, otonom bir bilgisayarlı görü ve ergonomi analiz yazılımıdır.
 
-**MOST (Maynard Operation Sequence Technique)** altyapısına dayanarak otonom zaman etüdü yapar ve operatörlerin dirsek açılarını takip ederek ergonomik risk raporları çıkarır.
+**MOST (Maynard Operation Sequence Technique)** altyapısına dayanarak otonom zaman etüdü yapar, çevrim sürelerini (Cycle Time) çıkarır ve operatörlerin duruş ve dirsek açılarını takip ederek ergonomik risk analizleri üretir.
 
 ---
 
-## 🚀 Özellikler
+## 🚀 Öne Çıkan Özellikler
 
-1. **Çift El Takibi ve 3-Bölge Alan Analizi (MediaPipe Hands):**
-   - Videodaki operatörün ellerini gerçek zamanlı takip eder (İki el destekli OR mantığı).
-   - "Alet Alanı" (Kırmızı), "Çalışma Alanı" (Yeşil) ve yeni "Bitiş Alanı" (Mavi) olmak üzere 3 bölgeli üretim mimarisi sunar.
+### 1. El Takibi & Grace Period Stabilitesi
+- **Grace Period (1.5 Saniye):** Elin anlık olarak kadrajdan çıkması veya kapanması durumunda veri ve durum makinesi (FSM) sıfırlanmaz, 1.5 saniye boyunca veriler dondurulur (Örn: ekranda dondurulmuş veriyi temsil eden `~142°` işareti gösterilir).
+- **Konum Eşlemeli El Kimliği:** MediaPipe'ın sol/sağ el etiketlerini karıştırma hatası, bilek koordinatlarının Öklid mesafesini takip eden konum tabanlı bir algoritmayla çözülmüştür. Eller çapraz geçse bile kimlikler korunur.
+- **Dirençli Başlangıç (Startup):** Video başlangıcında henüz hiç el algılanmadıysa kullanıcı arayüzü sessizce bekler, gereksiz "El Kaybı" uyarısı verilmez.
 
-2. **Otonom Çevrim (Cycle Time) ve Ürün Takibi:**
-   - Yeşil alandan (montaj tezgahı) çıkıp Mavi alana (bitiş) geçen ellerin hareketini debounce filtreleriyle işler.
-   - Ortalama Çevrim Süresi (Cycle Time), ürün sayısı ve örneklem standart sapması (n-1) değerlerini ölçer.
-   - Bitiş alanına sahte dokunuşları engellemek için çift giriş koruması ("double-finish protection") içerir.
-   
-2. **Otonom Zaman Etüdü ve FSM (Durum Makinesi):**
-   - MOST altyapısına dayalı bir FSM (`MOSTTracker`) içerir.
-   - Uzanma (REACH), Kavrama (GRASP), Taşıma (MOVE), Yerleştirme (PLACE) ve Boşta Bekleme (IDLE) durumlarını parmakların Pinch (Kavrama) oranlarına ve hızlarına bakarak otomatik tespit eder.
-   - Döngüleri ve TMU (Time Measurement Unit) değerlerini hesaplar.
-   - Yanlış kutuya uzanma gibi hatalı sekansları ("Sıra Hatası") anında tespit eder.
+### 2. Yenilenen Dikey HUD Tasarımı (Tek Sağ Şerit)
+- **Sağ Dikey Şerit (230px):** Ekranın altını kapatan paneller kaldırılmıştır. Tüm veriler sağ tarafta dikey, yarı saydam ve şık bir şeritte listelenir.
+- **Aspect Ratio Koruması:** Video sol %80'e aspect-ratio (en-boy oranı) korunarak yerleştirilir. Arayüz boyutu ne olursa olsun HUD üzerindeki yazılar ve grafikler her zaman net ve okunabilir kalır.
+- **Geçiş Animasyonları:** Bitiş alanına ulaşıldığında 12 kare boyunca yeşil dolgu (flash animasyonu) gösterilir. El kaybı anında üst ortada kırmızı geri sayım banner'ı tetiklenir.
 
-3. **Ergonomik Risk Analizi (MediaPipe Pose):**
-   - Operatörün sağ ve sol dirsek açılarını hesaplar.
-   - Açısal risk durumlarını "Trafik Işığı" (Yeşil, Sarı, Kırmızı) renk kodlarıyla canlı olarak video üzerinde (HUD) gösterir. (Örn: >150° Yüksek Risk, 120°-150° Orta Risk).
+### 3. Yapay Zekalı Mühendislik Analizi (Gemini 2.5 Flash)
+- **Metin Tabanlı LLM Analizi:** Video analizi bittiğinde, FSM olay geçmişi ve sayısal veriler kullanılarak Gemini API ile otomatik Türkçe mühendislik yorum raporu (`video_ismi_TARIH_ai_analiz.txt`) oluşturulur.
+- **Hata Toleransı (Graceful Degradation):** API anahtarının girilmemesi veya internet kesintilerinde program çökmez; sessizce hata mesajını raporlayarak normal yerel analizi tamamlar.
 
-4. **Kapsamlı Raporlama:**
-   - Analiz bitiminde hem `.csv` hem de `.xlsx` formatında renk kodlu, detaylı Excel raporları üretir.
-   - Raporlar; hareket süreleri, alan bazlı harcanan süre, dirsek/gövde açısı risk analizleri ve FSM çevrim adımlarını içerir.
-   - **YENİ:** Döngü & Çevrim sayfası ile üretilen ürünlerin tek tek çevrim sürelerini ve aykırı (şüpheli uzunluktaki) döngü kayıtlarını listeler.
+### 4. Modüler Parametre Yönetimi & Kalibrasyon Logu
+- **`config.json`:** Tüm analiz parametreleri (grace süresi, confidence oranı, ergonomi risk sınırları) kod dışına taşınarak tek bir JSON dosyasında toplanmıştır.
+- **`kalibrasyon_guncelle.py` (CLI):** Mühendislerin kalibrasyon testleri esnasında parametreleri terminalden güvenli ve tip-doğrulamalı olarak değiştirmesini sağlar.
+- **`config_history.log`:** Yapılan her parametre değişikliği; değiştiren kişi, tarih ve gerekçe bilgileriyle versiyonlanarak bu dosyaya kaydedilir.
 
 ---
 
 ## 📂 Proje Yapısı
 
-* `alan_tanim2.py`: Tkinter tabanlı ana kullanıcı arayüzü dosyası. Video yükleme, poligon alan çizimi ve analiz kontrolü buradan yapılır.
-* `el_takip_analizi.py`: MediaPipe (Pose & Hands) modellerinin çalıştırıldığı, açı/zaman hesaplamalarının yapıldığı ve gelişmiş HUD panelinin (yarı saydam grafikler) çizildiği ana analiz motorudur.
-* `fsm.py`: Otonom MOST durum makinesi. Ellerin koordinatları ve parmak arası mesafelerini alarak REACH, GRASP vb. eylemlere karar verir.
-* `Calistir.bat`: Uygulamayı hızlıca konsol olmadan başlatmaya yarayan toplu iş dosyası.
+*   `alan_tanim2.py`: Tkinter tabanlı ana kullanıcı arayüzü dosyası. Video yükleme, poligon alan çizimi ve analiz kontrolü buradan yapılır.
+*   `el_takip_analizi.py`: MediaPipe (Pose & Hands) modellerinin çalıştırıldığı, açı/zaman hesaplamalarının yapıldığı ve dikey HUD panelinin çizildiği ana analiz motorudur.
+*   `config_manager.py`: `config.json` dosyasını okuyan, eksik şema değerlerini tamamlayan ve atomik dosya yazma işlemlerini yürüten konfigürasyon yöneticisidir.
+*   `kalibrasyon_guncelle.py`: Parametre güncelleme ve versiyonlama işlemlerini yürüten interaktif komut satırı aracıdır.
+*   `fsm.py`: Otonom MOST durum makinesi. Ellerin koordinatları ve parmak arası mesafelerini alarak eylemlere karar verir.
+*   `state.py`: Analiz sürecinde verilerin (el durumu, ergonomi geçmişi, çevrim süreleri vb.) saklandığı durum veri modelidir.
+*   `Calistir.bat`: Uygulamayı hızlıca konsol olmadan başlatmaya yarayan Windows toplu iş dosyası.
 
 ---
 
 ## 🛠️ Kurulum ve Çalıştırma
 
-### Gereksinimler
-Uygulamanın çalışması için aşağıdaki Python kütüphaneleri yüklü olmalıdır:
+### Kütüphane Kurulumu
+Uygulamanın çalışması için gerekli kütüphaneleri terminalinizden aşağıdaki komutla kurabilirsiniz:
 ```bash
-pip install opencv-python mediapipe numpy openpyxl
+pip install opencv-python mediapipe numpy openpyxl pillow google-generativeai
 ```
-*(Not: `tkinter` ve `csv` standart Python kütüphaneleridir).*
+
+### Yapay Zeka Raporunu Aktifleştirmek (İsteğe Bağlı)
+Çevrim sonunda otomatik yapay zeka raporu almak için, uygulamayı başlatmadan önce komut satırına kendi Gemini API anahtarınızı tanımlamalısınız:
+```bash
+set GEMINI_API_KEY=kendi_api_anahtariniz
+```
 
 ### Nasıl Çalıştırılır?
-1. Klasör içerisindeki **`Calistir.bat`** dosyasına çift tıklayarak uygulamayı başlatabilirsiniz.
-2. Alternatif olarak terminal/komut satırından:
-   ```bash
-   python alan_tanim2.py
-   ```
-   komutu ile arayüzü açabilirsiniz.
+1.  Klasör içerisindeki **`Calistir.bat`** dosyasına çift tıklayarak uygulamayı başlatabilirsiniz.
+2.  Alternatif olarak terminal/komut satırından:
+    ```bash
+    python alan_tanim2.py
+    ```
+    komutu ile arayüzü açabilirsiniz.
 
-### Kullanım Adımları
-1. **Video Seçimi:** Arayüz açıldığında sol taraftan "Video Dosyası Yükle" diyerek analiz edilecek endüstriyel videoyu seçin.
-2. **Alan Tanımlama (3-Bölge):**
-   - Montaj masası için alan adını yazıp **"🟢 Çalışma Alanı Tanımla"**ya tıklayın. Videoda fare ile çokgen (poligon) çizip **ENTER** ile kapatın.
-   - Vida/Malzeme kutuları için alan adını yazıp **"🔴 Alet Alanı Tanımla"**ya tıklayın ve ilgili alanı çizin. *(Kutuları, operatörün alma sırasına göre tanımlamanız FSM'in doğru çalışmasını sağlar).*
-   - Hazır olan ürünün bırakılacağı alan için **"🔵 Bitiş Alanı Tanımla"**ya tıklayıp alanı belirleyin (Ürün sayımı için gereklidir).
-3. **Analizi Başlat:** **"▶️ Videoyu Başlat ve Analiz Et"** butonuna basarak yapay zeka sürecini başlatın.
-4. **Sonuçlar:** Video oynarken anlık durumlar sol alttaki FSM HUD'ında, ürün/çevrim metrikleri sağ alttaki HUD panelinde gösterilir. Video bittiğinde Excel raporları otomatik oluşturulur.
+---
+
+## 📖 Kullanım Adımları
+
+1.  **Video Seçimi:** Arayüz açıldığında sol taraftan "Video Dosyası Yükle" diyerek analiz edilecek endüstriyel videoyu seçin.
+2.  **Alan Tanımlama (3-Bölge):**
+    - Montaj masası için alan adını yazıp **"🟢 Çalışma Alanı Tanımla"** butonuna tıklayın. Açılan OpenCV penceresinde fare ile poligonu (çokgen) çizip **ENTER** tuşuna basarak kaydedin.
+    - Vida/malzeme kutuları için alan adını yazıp **"🔴 Alet Alanı Tanımla"** butonuna tıklayın ve alanları çizin. (Operatörün alma sırasına göre tanımlamanız önerilir).
+    - Bitmiş ürünlerin bırakılacağı yer için **"🔵 Bitiş Alanı Tanımla"** butonuna tıklayıp bitiş poligonunu çizin (Ürün sayımı için gereklidir).
+3.  **Analizi Başlat:** **"▶️ Videoyu Başlat ve Analiz Et"** butonuna basarak yapay zeka sürecini başlatın.
+4.  **Sonuçlar:** Video bittiğinde Excel (`.xlsx`), CSV (`.csv`) ve Yapay Zeka Raporu (`.txt`) çıktıları video ismiyle aynı dizine otomatik olarak kaydedilecektir.

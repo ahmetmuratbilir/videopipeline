@@ -1,0 +1,14 @@
+{
+    "EL_KAYIP_SURE": 0.25,
+    "EL_GRACE_SURE": 2.0,
+    "EL_CONFIDENCE_ESIGI": 0.65,
+    "ERGO_RISK_YUKSEK": 150.0,
+    "ERGO_RISK_DIKKAT": 120.0,
+    "GOVDE_RISK_YUKSEK": 60.0,
+    "GOVDE_RISK_DIKKAT": 45.0,
+    "FLASH_KARE_SAYISI": 12,
+    "HUD_SERIT_GENISLIK": 230,
+    "GEMINI_MODEL_NAME": "gemini-2.5-flash",
+    "version": 2,
+    "last_modified_by": "Murat"
+}

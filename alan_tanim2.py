@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 from datetime import datetime
-from el_takip_analizi import el_takip_ve_ergonomi_motoru_kare, excel_raporu_kaydet, alanlardan_fsm_config_uret
+from el_takip_analizi import el_takip_ve_ergonomi_motoru_kare, excel_raporu_kaydet, alanlardan_fsm_config_uret, generate_llm_report
 from fsm import MOSTTracker
 from state import AnalysisContext
 
@@ -303,6 +303,13 @@ class ErgonomiArayuz:
         if kare is None:
             return
 
+        if self.video_oyniyor:
+            img_rgb = cv2.cvtColor(kare, cv2.COLOR_BGR2RGB)
+            img_pil = Image.fromarray(img_rgb)
+            self.gosterim_karesi = ImageTk.PhotoImage(img_pil)
+            self.video_etiket.config(image=self.gosterim_karesi, text="")
+            return
+
         img_canvas = kare.copy()
 
         alet_sira_no = 0
@@ -501,8 +508,10 @@ class ErgonomiArayuz:
 
             ret, kare = self.cap.read()
             if ret:
+                gorunum_w = self.sag_panel.winfo_width() if self.sag_panel.winfo_width() > 100 else 730
+                gorunum_h = self.sag_panel.winfo_height() if self.sag_panel.winfo_height() > 100 else 550
                 islenmis_kare = el_takip_ve_ergonomi_motoru_kare(
-                    kare, self.alanlar, self.ctx, self.kare_suresi, self.fps
+                    kare, self.alanlar, self.ctx, self.kare_suresi, self.fps, (gorunum_w, gorunum_h)
                 )
 
                 self.ekranı_guncelle(islenmis_kare)
@@ -559,7 +568,9 @@ class ErgonomiArayuz:
                 fsm_tracker,
                 dirsek_gecmisi,
                 govde_gecmisi,
-                self.ctx.cycle_tracker
+                self.ctx.cycle_tracker,
+                self.ctx.el_kayip_toplam_sure,
+                self.ctx.el_kayip_olay_sayisi
             )
 
             if hasattr(self.ctx, 'fsm_events') and self.ctx.fsm_events:
@@ -604,6 +615,10 @@ class ErgonomiArayuz:
                 rapor_metni += f"   Std. Sapma (n-1): {sapma_str}\n"
                 if ct.atlanan_dongu_sureleri:
                     rapor_metni += f"   Aykırı (atlandı): {len(ct.atlanan_dongu_sureleri)} adet\n"
+
+            # LLM Raporu Entegrasyonu (Faz 3 - Faz A)
+            llm_raporu = generate_llm_report(video_ismi, self.ctx)
+            rapor_metni += f"\n\n🤖 YAPAY ZEKA MÜHENDİSLİK ANALİZİ:\n{llm_raporu}"
 
             messagebox.showinfo("Rapor Hazır", rapor_metni)
 
