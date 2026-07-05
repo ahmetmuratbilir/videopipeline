@@ -418,6 +418,7 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi,
     elin_oldugu_aktif_alan = None
     o_anki_durum = "Bosta (Bekleme)"
     tespit_edilen_alanlar = []
+    tum_el_noktalari = []
 
     # 2. MediaPipe Analizi
     if MEDIAPIPE_HAZIR:
@@ -426,6 +427,7 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi,
         # ── 2a. Hands ──────────────────────────────────────────────────────────
         sonuclar = eller_dedektoru.process(kare_rgb)
         if sonuclar.multi_hand_landmarks:
+            tum_el_noktalari = sonuclar.multi_hand_landmarks
             for el_noktalari in sonuclar.multi_hand_landmarks:
                 bilek = el_noktalari.landmark[_mp_hands.HandLandmark.WRIST]
                 bx, by = int(bilek.x * genislik), int(bilek.y * yukseklik)
@@ -586,19 +588,6 @@ def el_takip_ve_ergonomi_motoru_kare(kare, tanimlanan_alanlar, ctx, kare_suresi,
     )
 
     # 8. Çevrim Takip (Bitiş Alanı)
-    tum_el_noktalari = []
-    if MEDIAPIPE_HAZIR:
-        try:
-            rgb_kare = cv2.cvtColor(kare, cv2.COLOR_BGR2RGB)
-            el_sonuclari = mp_hands.Hands(
-                static_image_mode=False, max_num_hands=2,
-                min_detection_confidence=0.5, min_tracking_confidence=0.5
-            ).process(rgb_kare)
-            if el_sonuclari.multi_hand_landmarks:
-                tum_el_noktalari = el_sonuclari.multi_hand_landmarks
-        except Exception:
-            pass
-
     kare_zamani = kare_sayaci * kare_suresi
     cycle_tracker_guncelle(ctx, tanimlanan_alanlar, tum_el_noktalari, kare_zamani, yukseklik, genislik)
     hud_cevrim_ciz(kare, ctx)
